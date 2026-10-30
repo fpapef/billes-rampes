@@ -1,0 +1,9 @@
+# Godot : fichiers générés (le cache d'import, le modèle Android et le plugin Meta sont installés par la compilation GitHub)
+godot/.godot/
+godot/android/
+godot/addons/godotopenxrvendors/
+godot/**/*.import
+
+# Sorties
+build/
+dist/

@@ -1,0 +1,36 @@
+; Engine configuration file.
+; Réglages repris de l'exemple officiel « meta-passthrough-sample » du plugin OpenXR Vendors.
+
+config_version=5
+
+[application]
+
+config/name="Billes & Rampes"
+config/description="Circuits de billes en réalité mixte pour Meta Quest."
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.png"
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+common/physics_ticks_per_second=120
+common/max_physics_steps_per_frame=8
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=2
+
+[xr]
+
+openxr/enabled=true
+openxr/reference_space=1
+openxr/environment_blend_mode=2
+openxr/foveation_level=2
+openxr/foveation_dynamic=true
+openxr/extensions/hand_tracking=true
+openxr/extensions/meta/passthrough=true
+shaders/enabled=true
