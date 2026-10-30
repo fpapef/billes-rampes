@@ -9,7 +9,7 @@ config/name="Billes & Rampes"
 config/description="Circuits de billes en réalité mixte pour Meta Quest."
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
-config/icon="res://icon.png"
+config/icon="res://icon.svg"
 
 [physics]
 
