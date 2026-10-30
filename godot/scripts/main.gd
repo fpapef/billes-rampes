@@ -5,6 +5,7 @@ extends Node3D
 const Defs = preload("res://scripts/defs.gd")
 const Sfx = preload("res://scripts/sfx.gd")
 const Toolbox = preload("res://scripts/toolbox.gd")
+const SceneSurface = preload("res://scene_surface.tscn")
 
 const LAYER_WORLD := 1
 const LAYER_PIECES := 2
@@ -23,7 +24,7 @@ const BUTTONS := {
 		[["marble", "Lâcher une bille", "#2f7de1"]],
 		[["rain", "Pluie de billes", "#7a4ce0"]],
 		[["mode", "Mode : Libre", "#c9741c"]],
-		[["undo", "Annuler", "#4f5970"]],
+		[["undo", "Annuler", "#4f5970"], ["surfaces", "Surfaces", "#23856a"]],
 		[["clear", "Tout effacer", "#b8413a"]],
 	],
 	"challenge": [
@@ -31,7 +32,7 @@ const BUTTONS := {
 		[["retry", "Recommencer", "#4f5970"]],
 		[["prev", "‹ Préc.", "#3b4a66"], ["next", "Suiv. ›", "#3b4a66"]],
 		[["mode", "Mode : Défis", "#c9741c"]],
-		[["undo", "Annuler", "#4f5970"]],
+		[["undo", "Annuler", "#4f5970"], ["surfaces", "Surfaces", "#23856a"]],
 	],
 }
 
@@ -110,6 +111,8 @@ var flashes := {}
 var panel_dirty := true
 var xr_frames := 0
 var hover_ids := {}
+var scene_manager = null    # OpenXRFbSceneManager (plugin Meta) : tables, murs et sol réels
+var surface_count := 0
 
 var _mesh_cache := {}
 var _shape_cache := {}
@@ -274,7 +277,48 @@ func _setup_xr() -> bool:
 	# Recentrage (bouton Meta maintenu) : la boîte à outils revient devant le joueur
 	xr_interface.pose_recentered.connect(place_toolbox_in_front)
 	_apply_passthrough()
+	_setup_scene_understanding()
 	return true
+
+
+# Surfaces réelles : le Quest fournit une forme de collision pour chaque élément de la pièce configurée
+func _setup_scene_understanding() -> void:
+	if not ClassDB.class_exists("OpenXRFbSceneManager"):
+		return
+	scene_manager = ClassDB.instantiate("OpenXRFbSceneManager")
+	scene_manager.set("default_scene", SceneSurface)
+	xr_origin.add_child(scene_manager)
+	scene_manager.connect("openxr_fb_scene_data_missing", _on_scene_data_missing)
+	scene_manager.connect("openxr_fb_scene_capture_completed", _on_scene_capture_completed)
+	# La permission « données de la pièce » est demandée au premier lancement
+	get_tree().on_request_permissions_result.connect(_on_permission_result)
+	OS.request_permissions()
+
+
+func _on_permission_result(permission: String, granted: bool) -> void:
+	if permission.contains("USE_SCENE"):
+		if granted:
+			_recreate_scene_anchors()
+		else:
+			toast("Sans l'accès aux données de la pièce, les billes ne voient que le sol.", 6.0)
+
+
+func _on_scene_data_missing() -> void:
+	# Pièce jamais configurée : le Quest propose de la scanner
+	scene_manager.request_scene_capture()
+
+
+func _on_scene_capture_completed(success: bool) -> void:
+	if success:
+		_recreate_scene_anchors()
+
+
+func _recreate_scene_anchors() -> void:
+	if scene_manager == null:
+		return
+	if scene_manager.are_scene_anchors_created():
+		scene_manager.remove_scene_anchors()
+	scene_manager.create_scene_anchors()
 
 
 func _apply_passthrough() -> void:
@@ -1060,6 +1104,14 @@ func _handle_ui(id: String, ptr: Pointer, dist: float, btn: String) -> void:
 		"clear":
 			clear_all()
 			sfx.play("del")
+		"surfaces":
+			var found := get_tree().get_nodes_in_group("real_surfaces")
+			for s in found:
+				s.call("flash")
+			if found.is_empty():
+				toast("Aucune surface réelle : configurez l'espace dans les paramètres du Quest.", 6.0)
+			else:
+				toast("%d surface(s) réelle(s) : tables, murs, sol…" % found.size())
 		"mode":
 			set_mode("challenge" if mode == "free" else "free")
 		"launch":
@@ -1324,6 +1376,15 @@ func _process(delta: float) -> void:
 	for s in stars:
 		s.node.rotation.y = sim_time * 1.6
 	_update_confetti(delta)
+
+	# Annonce des surfaces réelles dès qu'elles arrivent
+	if scene_manager != null:
+		var n := get_tree().get_node_count_in_group("real_surfaces")
+		if n != surface_count:
+			if n > surface_count:
+				toast("%d surface(s) réelle(s) détectée(s) : les billes rebondissent dessus." % n, 5.0)
+			surface_count = n
+			wake_marbles()
 
 	# Lumière : l'ombre suit le joueur
 	if xr_active:
