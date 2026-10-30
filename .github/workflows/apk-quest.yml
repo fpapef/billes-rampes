@@ -1,0 +1,147 @@
+name: APK Meta Quest
+
+# À chaque envoi sur main : test des niveaux, compilation de l'APK et publication dans « Releases ».
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: "4.7.2"
+  VENDORS_VERSION: "5.1.0-stable"
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Installer Godot
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -O godot.zip
+          unzip -q godot.zip
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+          rm godot.zip
+          godot --version
+
+      - name: Installer le plugin Meta (OpenXR Vendors)
+        run: |
+          wget -q "https://github.com/GodotVR/godot_openxr_vendors/releases/download/${VENDORS_VERSION}/godotopenxrvendorsaddon.zip" -O vendors.zip
+          unzip -q vendors.zip -d vendors
+          src=$(find vendors -type d -name godotopenxrvendors | head -n 1)
+          echo "Plugin trouvé : $src"
+          mkdir -p godot/addons
+          cp -r "$src" godot/addons/
+          rm -rf vendors vendors.zip
+
+      - name: Importer le projet
+        run: timeout 300 godot --headless --path godot --import 2>&1 | tee import.log || true
+
+      - name: Tester les niveaux (vraie physique, sans casque)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout 300 godot --headless --path godot --xr-mode off --fixed-fps 120 -- --test-levels 2>&1 | tee tests.log
+
+      - name: Vérifier qu'aucun script n'est en erreur
+        run: |
+          if grep -E "SCRIPT ERROR|Parse Error|Failed to load script|Compile Error" import.log tests.log; then
+            echo "::error::Erreurs dans les scripts (voir ci-dessus)"
+            exit 1
+          fi
+
+      - name: Modèles d'export (cache)
+        id: templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.stable
+          key: godot-templates-${{ env.GODOT_VERSION }}
+
+      - name: Télécharger les modèles d'export
+        if: steps.templates.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -O templates.tpz
+          unzip -q templates.tpz -d tpl
+          dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$dest"
+          mv tpl/templates/* "$dest/"
+          rm -rf templates.tpz tpl
+
+      - name: Modèle de compilation Android (Gradle)
+        run: |
+          src="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_source.zip"
+          mkdir -p godot/android/build
+          unzip -q -o "$src" -d godot/android/build
+          echo "${GODOT_VERSION}.stable" > godot/android/.build_version
+          touch godot/android/build/.gdignore
+
+      - name: Réglages de l'éditeur (SDK Android et Java)
+        run: |
+          mkdir -p ~/.config/godot
+          for f in editor_settings-4.tres editor_settings-4.7.tres; do
+            printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\n' "$ANDROID_SDK_ROOT" "$JAVA_HOME" > ~/.config/godot/$f
+          done
+          cat ~/.config/godot/editor_settings-4.7.tres
+
+      - name: Clé de signature (cache)
+        id: keystore
+        uses: actions/cache@v4
+        with:
+          path: keystore
+          key: billes-keystore-v1
+
+      - name: Créer la clé de signature
+        if: steps.keystore.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p keystore
+          keytool -genkeypair -keystore keystore/release.keystore -alias billes -keyalg RSA -keysize 2048 \
+            -validity 10000 -storepass billesrampes -keypass billesrampes -dname "CN=Billes Rampes"
+
+      - name: Exporter l'APK
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ github.workspace }}/keystore/release.keystore
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: billes
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: billesrampes
+        run: |
+          mkdir -p build
+          timeout 1500 godot --headless --path godot --export-release "Meta Quest" "$GITHUB_WORKSPACE/build/billes-rampes.apk" 2>&1 | tee export.log
+          ls -la build
+          test -f build/billes-rampes.apk
+
+      - name: Garder les journaux
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journaux
+          path: |
+            import.log
+            tests.log
+            export.log
+          if-no-files-found: ignore
+
+      - name: Publier l'APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "APK pour Meta Quest 3 (installer avec le mode développeur)."
+            echo
+            echo '```'
+            grep -E "^(DEMO|NIVEAU|RESULTAT)" tests.log || echo "Tests indisponibles"
+            echo '```'
+          } > notes.md
+          gh release create "build-${{ github.run_number }}" build/billes-rampes.apk \
+            --title "Billes & Rampes — build ${{ github.run_number }}" --notes-file notes.md --latest
